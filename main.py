@@ -90,11 +90,30 @@ class Player:
         self.terminal_velocity = 12.0
         self.walk_speed = 5.0
         self.jump_force = -14.0
+        
+        # Animation state
+        self.move_direction = "idle"
+        self.facing = "right"
+        self.anim_frame = 0
+        self.anim_timer = 0
+        self.anim_speed = 8
+
+        # Input forgiveness keeps jumps responsive even if the key press lands
+        # a few frames before or after the exact ground-contact frame.
+        self.jump_buffer_frames = 8
+        self.coyote_frames = 6
+        self.jump_buffer_timer = 0
+        self.coyote_timer = 0
 
     def get_rect(self):
         return pygame.Rect(self.px, self.py, self.width, self.height)
 
     def update(self, game):
+        if self.jump_buffer_timer > 0:
+            self.jump_buffer_timer -= 1
+        if self.coyote_timer > 0:
+            self.coyote_timer -= 1
+
         # 1. Apply gravity if in the air
         if not self.on_ground:
             self.vy += self.gravity
@@ -132,6 +151,15 @@ class Player:
                     self.vy = 0.0  # Halt upward momentum
                 rect = self.get_rect()
 
+        if self.on_ground:
+            self.coyote_timer = self.coyote_frames
+
+        if self.jump_buffer_timer > 0 and (self.on_ground or self.coyote_timer > 0):
+            self.jump()
+            self.jump_buffer_timer = 0
+            self.coyote_timer = 0
+            game.steps += 1
+
         # Emit dust particles while walking
         if self.on_ground and abs(self.vx) > 0 and random.random() < 0.2:
             game.particles.append(Particle(
@@ -144,15 +172,35 @@ class Player:
                 random.randint(10, 20)
             ))
 
+        # Cycle Alma's walking frames while A/D movement is active.
+        if self.move_direction in ["left", "right"]:
+            self.anim_timer += 1
+            if self.anim_timer >= self.anim_speed:
+                self.anim_timer = 0
+                self.anim_frame = (self.anim_frame + 1) % 3
+        else:
+            self.anim_timer = 0
+            self.anim_frame = 0
+
     def jump(self):
-        if self.on_ground:
-            self.vy = self.jump_force
-            self.on_ground = False
+        self.vy = self.jump_force
+        self.on_ground = False
+
+    def request_jump(self):
+        self.jump_buffer_timer = self.jump_buffer_frames
 
     def draw(self, game, ox, oy):
         rect = self.get_rect().move(ox, oy)
-        if game.assets.get("alma"):
-            game.screen.blit(game.assets["alma"], (rect.x - (TILE_SIZE - self.width)//2, rect.y - (TILE_SIZE - self.height)))
+        image = None
+        if self.move_direction in ["left", "right"]:
+            frames = game.assets.get(f"{self.move_direction}_frames", [])
+            if len(frames) == 3 and all(frames):
+                image = frames[self.anim_frame]
+        if image is None:
+            image = game.assets.get("stand") or game.assets.get("alma")
+
+        if image:
+            game.screen.blit(image, (rect.x - (TILE_SIZE - self.width)//2, rect.y - (TILE_SIZE - self.height)))
         else:
             # Fallback player vector
             pygame.draw.rect(game.screen, COLOR_CYAN, rect, border_radius=6)
@@ -249,7 +297,7 @@ class Generator:
     def draw(self, game, ox, oy):
         draw_rect = self.rect.move(ox, oy)
         if game.assets.get("generator"):
-            self.screen.blit(game.assets["generator"], draw_rect.topleft)
+            game.screen.blit(game.assets["generator"], draw_rect.topleft)
         else:
             # Fallback generator UI representation
             pygame.draw.rect(game.screen, (40, 50, 70), draw_rect)
@@ -268,15 +316,20 @@ class Generator:
 # ==============================================================================
 class Game:
     def __init__(self):
+        self.level_files = [
+            "levels/level1.txt",
+            "levels/level2.txt",
+            "levels/level3.txt"
+        ]
+        self.level_index = 0
         self.level_data = []
         self.grid_w = 0
         self.grid_h = 0
-        self.load_level("levels/level1.txt")
+        self.load_current_level()
         
         # Setup Pygame screen size and window caption
-        self.win_w = self.grid_w * TILE_SIZE
-        self.win_h = self.grid_h * TILE_SIZE + HUD_HEIGHT
-        self.screen = pygame.display.set_mode((self.win_w, self.win_h))
+        self.screen = None
+        self.configure_screen()
         pygame.display.set_caption("Ecos Cordillera - Operation Alma Platformer")
         self.clock = pygame.time.Clock()
         
@@ -301,6 +354,30 @@ class Game:
         
         self.reset_game()
 
+    def configure_screen(self):
+        self.win_w = self.grid_w * TILE_SIZE
+        self.win_h = self.grid_h * TILE_SIZE + HUD_HEIGHT
+        self.screen = pygame.display.set_mode((self.win_w, self.win_h))
+
+    def load_current_level(self):
+        self.load_level(self.level_files[self.level_index])
+
+    def restart_from_first_level(self):
+        self.level_index = 0
+        self.load_current_level()
+        self.configure_screen()
+        self.reset_game()
+
+    def advance_level(self):
+        if self.level_index < len(self.level_files) - 1:
+            self.level_index += 1
+            self.load_current_level()
+            self.configure_screen()
+            self.state = "PLAYING"
+            self.reset_game()
+        else:
+            self.state = "WON"
+
     def load_level(self, filename):
         if not os.path.exists(filename):
             self.level_data = [
@@ -323,6 +400,8 @@ class Game:
         
         self.grid_h = len(self.level_data)
         self.grid_w = len(self.level_data[0]) if self.grid_h > 0 else 0
+        if any(len(row) != self.grid_w for row in self.level_data):
+            raise ValueError(f"Every row in {filename} must have the same width.")
 
     def load_assets(self):
         self.assets = {}
@@ -331,6 +410,7 @@ class Game:
             "wall": "assets/wall.png",
             "door": "assets/door.png",
             "alma": "assets/alma.png",
+            "stand": "assets/stand.png",
             "drone": "assets/drone.png",
             "generator": "assets/generator.png"
         }
@@ -345,6 +425,21 @@ class Game:
                     self.assets[key] = None
             else:
                 self.assets[key] = None
+
+        for direction in ["right", "left"]:
+            self.assets[f"{direction}_frames"] = []
+            for index in range(3):
+                path = f"assets/{direction}{index}.png"
+                if os.path.exists(path):
+                    try:
+                        img = pygame.image.load(path).convert_alpha()
+                        img = pygame.transform.scale(img, (TILE_SIZE, TILE_SIZE))
+                        self.assets[f"{direction}_frames"].append(img)
+                    except Exception as e:
+                        print(f"Error loading {path}: {e}")
+                        self.assets[f"{direction}_frames"].append(None)
+                else:
+                    self.assets[f"{direction}_frames"].append(None)
 
     def reset_game(self):
         self.start_time = pygame.time.get_ticks()
@@ -570,6 +665,7 @@ class Game:
         font = get_font(24)
         lbl_jumps = font.render(f"JUMPS: {self.steps}", True, COLOR_WHITE)
         lbl_time = font.render(f"TIME: {self.elapsed_time}s", True, COLOR_WHITE)
+        lbl_level = font.render(f"LEVEL: {self.level_index + 1}/{len(self.level_files)}", True, COLOR_WHITE)
         
         status_text = "DOOR LOCKED: ACTIVATE GENERATOR"
         status_color = COLOR_RED
@@ -580,6 +676,7 @@ class Game:
         lbl_status = font.render(status_text, True, status_color)
         
         self.screen.blit(lbl_status, (20, hud_rect.top + 15))
+        self.screen.blit(lbl_level, (self.win_w - 500, hud_rect.top + 15))
         self.screen.blit(lbl_jumps, (self.win_w - 300, hud_rect.top + 15))
         self.screen.blit(lbl_time, (self.win_w - 140, hud_rect.top + 15))
         
@@ -754,14 +851,12 @@ class Game:
                     if self.state == "START":
                         if event.key == pygame.K_SPACE:
                             self.state = "PLAYING"
-                            self.reset_game()
+                            self.restart_from_first_level()
                             
                     elif self.state == "PLAYING":
                         # Jump Triggers
                         if event.key in [pygame.K_w, pygame.K_UP, pygame.K_SPACE]:
-                            if self.player.on_ground:
-                                self.player.jump()
-                                self.steps += 1
+                            self.player.request_jump()
                         # Interact Generator
                         elif event.key == pygame.K_e:
                             if self.near_generator_msg and self.generator:
@@ -780,15 +875,15 @@ class Game:
                             self.current_frequency = min(108.0, self.current_frequency + 0.2)
                         elif event.key == pygame.K_SPACE:
                             if self.freq_connected:
-                                self.state = "WON"
                                 door_center = self.door_rect.center
                                 self.add_explosion(door_center[0], door_center[1], COLOR_GREEN)
                                 self.trigger_shake(12)
+                                self.advance_level()
                                 
                     elif self.state == "WON":
                         if event.key == pygame.K_SPACE:
                             self.state = "PLAYING"
-                            self.reset_game()
+                            self.restart_from_first_level()
                             
                     elif self.state == "GAME_OVER":
                         if event.key == pygame.K_r:
@@ -803,10 +898,15 @@ class Game:
                 
                 if left_pressed and not right_pressed:
                     self.player.vx = -self.player.walk_speed
+                    self.player.move_direction = "left"
+                    self.player.facing = "left"
                 elif right_pressed and not left_pressed:
                     self.player.vx = self.player.walk_speed
+                    self.player.move_direction = "right"
+                    self.player.facing = "right"
                 else:
                     self.player.vx = 0.0
+                    self.player.move_direction = "idle"
 
             self.update()
             self.draw()
