@@ -25,6 +25,7 @@ COLOR_RED = (255, 50, 50)       # Critical Red
 COLOR_WHITE = (230, 235, 245)   # Clean White
 COLOR_GRAY = (100, 110, 130)    # Muted Gray
 COLOR_YELLOW = (255, 215, 0)    # Warning/Interactive Yellow
+COLOR_SHADOW = (12, 18, 32)     # Safe shadow cover
 
 # Load fonts safely
 def get_font(size, bold=False):
@@ -219,6 +220,7 @@ class Drone:
         self.py = y * TILE_SIZE + (TILE_SIZE - self.height)
         self.vx = 2.0  # Horizontal speed
         self.dir = 1   # Direction indicator: 1 = Right, -1 = Left
+        self.view_distance = TILE_SIZE * 3
         
     def get_rect(self):
         return pygame.Rect(self.px, self.py, self.width, self.height)
@@ -267,8 +269,53 @@ class Drone:
                 random.randint(10, 20)
             ))
 
+    def can_see_player(self, game):
+        if game.player_hidden or not game.player:
+            return False
+
+        drone_rect = self.get_rect()
+        player_rect = game.player.get_rect()
+        vision_top = drone_rect.centery - TILE_SIZE // 2
+        vision_rect = pygame.Rect(
+            drone_rect.centerx if self.dir > 0 else drone_rect.centerx - self.view_distance,
+            vision_top,
+            self.view_distance,
+            TILE_SIZE
+        )
+
+        if not vision_rect.colliderect(player_rect):
+            return False
+
+        drone_center = drone_rect.center
+        player_center = player_rect.center
+        for tile in game.get_solid_rects():
+            if tile.clipline(drone_center, player_center):
+                return False
+        return True
+
     def draw(self, game, ox, oy):
         rect = self.get_rect().move(ox, oy)
+        cone_length = self.view_distance
+        cone_color = (255, 80, 40, 58)
+        if game.player_hidden:
+            cone_color = (0, 255, 200, 28)
+
+        if self.dir > 0:
+            points = [
+                (rect.centerx, rect.centery),
+                (rect.centerx + cone_length, rect.centery - TILE_SIZE // 2),
+                (rect.centerx + cone_length, rect.centery + TILE_SIZE // 2)
+            ]
+        else:
+            points = [
+                (rect.centerx, rect.centery),
+                (rect.centerx - cone_length, rect.centery - TILE_SIZE // 2),
+                (rect.centerx - cone_length, rect.centery + TILE_SIZE // 2)
+            ]
+        cone_surface = pygame.Surface((game.win_w, game.win_h), pygame.SRCALPHA)
+        pygame.draw.polygon(cone_surface, cone_color, points)
+        game.screen.blit(cone_surface, (0, 0))
+
         if game.assets.get("drone"):
             game.screen.blit(game.assets["drone"], (rect.x - (TILE_SIZE - self.width)//2, rect.y - (TILE_SIZE - self.height)//2))
         else:
@@ -311,6 +358,54 @@ class Generator:
         pygame.draw.circle(s, light_color + (pulse,), (8, 8), 8)
         game.screen.blit(s, (draw_rect.centerx - 8, draw_rect.centery - 12))
 
+class CircuitNode:
+    def __init__(self, x, y, label="C"):
+        self.grid_x = x
+        self.grid_y = y
+        self.label = label
+        self.rect = pygame.Rect(x * TILE_SIZE, y * TILE_SIZE, TILE_SIZE, TILE_SIZE)
+        self.activated = False
+
+    def draw(self, game, ox, oy):
+        draw_rect = self.rect.move(ox, oy)
+        base_color = (24, 35, 54)
+        line_color = COLOR_GREEN if self.activated else COLOR_YELLOW
+        pygame.draw.rect(game.screen, base_color, draw_rect.inflate(-10, -10), border_radius=8)
+        pygame.draw.rect(game.screen, line_color, draw_rect.inflate(-10, -10), 3, border_radius=8)
+        pygame.draw.line(game.screen, line_color, (draw_rect.left + 18, draw_rect.centery), (draw_rect.right - 18, draw_rect.centery), 3)
+        pygame.draw.circle(game.screen, line_color, draw_rect.center, 8, 2)
+        lbl = get_font(20, bold=True).render(self.label, True, COLOR_BG if self.activated else COLOR_WHITE)
+        self_center = (draw_rect.centerx - lbl.get_width() // 2, draw_rect.centery - lbl.get_height() // 2)
+        game.screen.blit(lbl, self_center)
+        if self.activated:
+            pulse = int(140 + 90 * math.sin(pygame.time.get_ticks() * 0.012))
+            glow = pygame.Surface((TILE_SIZE, TILE_SIZE), pygame.SRCALPHA)
+            pygame.draw.circle(glow, COLOR_GREEN + (pulse,), (TILE_SIZE // 2, TILE_SIZE // 2), 20)
+            game.screen.blit(glow, draw_rect.topleft)
+
+class RadioBeacon:
+    def __init__(self, x, y):
+        self.rect = pygame.Rect(x * TILE_SIZE, y * TILE_SIZE, TILE_SIZE, TILE_SIZE)
+
+    def draw(self, game, ox, oy):
+        draw_rect = self.rect.move(ox, oy)
+        pygame.draw.rect(game.screen, (18, 40, 80), draw_rect)
+        pygame.draw.rect(game.screen, COLOR_CYAN, draw_rect, 3, border_radius=8)
+        center = draw_rect.center
+        pygame.draw.circle(game.screen, COLOR_CYAN, center, 10, 2)
+        pygame.draw.circle(game.screen, COLOR_WHITE, center, 3)
+
+class ShadowZone:
+    def __init__(self, x, y):
+        self.rect = pygame.Rect(x * TILE_SIZE, y * TILE_SIZE, TILE_SIZE, TILE_SIZE)
+
+    def draw(self, game, ox, oy):
+        draw_rect = self.rect.move(ox, oy)
+        shadow = pygame.Surface((TILE_SIZE, TILE_SIZE), pygame.SRCALPHA)
+        shadow.fill(COLOR_SHADOW + (150,))
+        pygame.draw.rect(shadow, COLOR_CYAN + (65,), shadow.get_rect(), 2, border_radius=4)
+        game.screen.blit(shadow, draw_rect.topleft)
+
 # ==============================================================================
 # MAIN GAME CLASS (ENGINE, STATE MANAGEMENT, EVENT LOOP)
 # ==============================================================================
@@ -321,16 +416,87 @@ class Game:
             "levels/level2.txt",
             "levels/level3.txt"
         ]
+        self.level_configs = {
+            "levels/level1.txt": {
+                "target_frequency": 104.5,
+                "hint": "La baliza usa base 100.5 y suma energia por nodo restaurado.",
+                "puzzle_mode": "restore_all",
+                "puzzle_name": "Red de energia",
+                "puzzle_hint": "Activa todos los nodos C antes del generador.",
+                "required_bandwidth": "WIDE",
+                "required_signal_code": "A",
+                "frequency_window": 0.12,
+                "stability_required": 35,
+                "tuning_hint": "Logica: base 100.5 + 2.0 MHz por cada nodo C restaurado. Emergencia = banda ancha, canal inicial."
+            },
+            "levels/level2.txt": {
+                "target_frequency": 95.3,
+                "hint": "La secuencia de reles tambien codifica la portadora.",
+                "puzzle_mode": "sequence",
+                "puzzle_name": "Secuencia de reles",
+                "puzzle_hint": "Orden de arranque: 2 -> 1 -> 3.",
+                "sequence": ["2", "1", "3"],
+                "required_bandwidth": "NARROW",
+                "required_signal_code": "B",
+                "frequency_window": 0.09,
+                "stability_required": 70,
+                "tuning_hint": "Logica: los reles 2-1-3 entregan digitos 9-5-3. Usa decimal antes del ultimo digito. El filtro de ruido pide banda estrecha."
+            },
+            "levels/level3.txt": {
+                "target_frequency": 100.7,
+                "hint": "El transmisor final suma el pulso decimal a la portadora base.",
+                "puzzle_mode": "polarity",
+                "puzzle_name": "Matriz de polaridad",
+                "puzzle_hint": "Cada panel alterna otros circuitos: busca dejar todo en verde.",
+                "initial_active": {"1": False, "2": True, "3": False},
+                "polarity_links": {
+                    "1": ["1", "2"],
+                    "2": ["1", "2", "3"],
+                    "3": ["2", "3"]
+                },
+                "required_bandwidth": "PULSE",
+                "required_signal_code": "C",
+                "frequency_window": 0.06,
+                "stability_required": 105,
+                "signal_noise": 0.18,
+                "tuning_hint": "Logica: matriz completa = 100 MHz + pulso final 0.7. Solo responde a pulsos cifrados del tercer canal."
+            }
+        }
         self.level_index = 0
         self.level_data = []
         self.grid_w = 0
         self.grid_h = 0
+        self.current_frequency = 88.5
+        self.target_frequency = 104.5
+        self.freq_connected = False
+        self.level_hint = ""
+        self.puzzle_mode = "restore_all"
+        self.puzzle_name = ""
+        self.puzzle_hint = ""
+        self.sequence_target = []
+        self.sequence_index = 0
+        self.initial_active = {}
+        self.polarity_links = {}
+        self.puzzle_feedback = ""
+        self.puzzle_feedback_timer = 0
+        self.bandwidth_options = ["WIDE", "NARROW", "PULSE"]
+        self.signal_code_options = ["A", "B", "C"]
+        self.current_bandwidth = "WIDE"
+        self.current_signal_code = "A"
+        self.required_bandwidth = "WIDE"
+        self.required_signal_code = "A"
+        self.frequency_window = 0.1
+        self.stability_required = 45
+        self.stability_frames = 0
+        self.signal_noise = 0.0
+        self.tuning_hint = ""
+        self.radio_beacons = []
         self.load_current_level()
         
         # Setup Pygame screen size and window caption
         self.screen = None
         self.configure_screen()
-        pygame.display.set_caption("Ecos Cordillera - Operation Alma Platformer")
+        pygame.display.set_caption("Ecos de la Cordillera: Estaciones")
         self.clock = pygame.time.Clock()
         
         self.load_assets()
@@ -351,6 +517,10 @@ class Game:
         self.start_time = 0
         self.elapsed_time = 0
         self.near_generator_msg = False
+        self.near_circuit_msg = False
+        self.near_circuit = None
+        self.player_hidden = False
+        self.last_failure = ""
         
         self.reset_game()
 
@@ -360,7 +530,24 @@ class Game:
         self.screen = pygame.display.set_mode((self.win_w, self.win_h))
 
     def load_current_level(self):
-        self.load_level(self.level_files[self.level_index])
+        filename = self.level_files[self.level_index]
+        self.load_level(filename)
+        config = self.level_configs.get(filename, {})
+        self.target_frequency = config.get("target_frequency", 104.5)
+        self.level_hint = config.get("hint", "Busca la frecuencia correcta para activar la puerta.")
+        self.current_frequency = max(88.0, min(108.0, self.target_frequency - 4.0))
+        self.puzzle_mode = config.get("puzzle_mode", "restore_all")
+        self.puzzle_name = config.get("puzzle_name", "Circuitos")
+        self.puzzle_hint = config.get("puzzle_hint", "Restaura los circuitos antes de activar el generador.")
+        self.sequence_target = config.get("sequence", [])
+        self.initial_active = config.get("initial_active", {})
+        self.polarity_links = config.get("polarity_links", {})
+        self.required_bandwidth = config.get("required_bandwidth", "WIDE")
+        self.required_signal_code = config.get("required_signal_code", "A")
+        self.frequency_window = config.get("frequency_window", 0.1)
+        self.stability_required = config.get("stability_required", 45)
+        self.signal_noise = config.get("signal_noise", 0.0)
+        self.tuning_hint = config.get("tuning_hint", "Ajusta la frecuencia y bloquea el enlace.")
 
     def restart_from_first_level(self):
         self.level_index = 0
@@ -446,15 +633,29 @@ class Game:
         self.particles.clear()
         self.shake_intensity = 0
         self.steps = 0
-        self.current_frequency = 88.5
+        self.current_frequency = max(88.0, min(108.0, self.target_frequency - 4.0))
         self.freq_connected = False
         self.near_generator_msg = False
+        self.near_radio_hint = False
+        self.near_circuit_msg = False
+        self.near_circuit = None
+        self.player_hidden = False
+        self.last_failure = ""
+        self.sequence_index = 0
+        self.puzzle_feedback = ""
+        self.puzzle_feedback_timer = 0
+        self.current_bandwidth = "WIDE"
+        self.current_signal_code = "A"
+        self.stability_frames = 0
         
         self.drones = []
         self.solids = []
         self.player = None
         self.generator = None
         self.door_rect = None
+        self.radio_beacons = []
+        self.circuit_nodes = []
+        self.shadow_zones = []
 
         for r in range(self.grid_h):
             for c in range(self.grid_w):
@@ -470,9 +671,118 @@ class Game:
                     self.door_rect = rect
                 elif ch == 'D':
                     self.drones.append(Drone(c, r))
+                elif ch == 'R':
+                    self.radio_beacons.append(RadioBeacon(c, r))
+                elif ch in ['C', '1', '2', '3']:
+                    node = CircuitNode(c, r, ch)
+                    node.activated = self.initial_active.get(ch, False)
+                    self.circuit_nodes.append(node)
+                elif ch == 'S':
+                    self.shadow_zones.append(ShadowZone(c, r))
 
     def get_solid_rects(self):
         return self.solids
+
+    def circuits_powered(self):
+        if self.puzzle_mode == "sequence":
+            return self.sequence_index >= len(self.sequence_target) and len(self.sequence_target) > 0
+        return all(node.activated for node in self.circuit_nodes)
+
+    def circuit_interactable(self, node):
+        if self.puzzle_mode == "polarity":
+            return True
+        return not node.activated
+
+    def puzzle_progress_text(self):
+        if self.puzzle_mode == "sequence":
+            return f"{self.sequence_index}/{len(self.sequence_target)}"
+        active_nodes = sum(1 for node in self.circuit_nodes if node.activated)
+        return f"{active_nodes}/{len(self.circuit_nodes)}"
+
+    def set_puzzle_feedback(self, message):
+        self.puzzle_feedback = message
+        self.puzzle_feedback_timer = FPS * 2
+
+    def frequency_aligned(self):
+        return abs(self.current_frequency - self.target_frequency) <= self.frequency_window
+
+    def bandwidth_aligned(self):
+        return self.current_bandwidth == self.required_bandwidth
+
+    def signal_code_aligned(self):
+        return self.current_signal_code == self.required_signal_code
+
+    def tuning_requirements_met(self):
+        return self.frequency_aligned() and self.bandwidth_aligned() and self.signal_code_aligned()
+
+    def frequency_diagnostic(self):
+        if self.frequency_aligned():
+            return "CARRIER LOCK RANGE"
+        if self.current_frequency < self.target_frequency:
+            return "CARRIER LOW"
+        return "CARRIER HIGH"
+
+    def filter_diagnostic(self):
+        return "FILTER ACCEPTED" if self.bandwidth_aligned() else "FILTER REJECTED"
+
+    def handshake_diagnostic(self):
+        return "HANDSHAKE OK" if self.signal_code_aligned() else "NO HANDSHAKE"
+
+    def tuning_progress(self):
+        if self.stability_required <= 0:
+            return 1.0
+        return max(0.0, min(1.0, self.stability_frames / self.stability_required))
+
+    def signal_strength(self):
+        diff = abs(self.current_frequency - self.target_frequency)
+        freq_score = max(0.0, 1.0 - diff / max(self.frequency_window * 5, 0.1))
+        band_score = 1.0 if self.bandwidth_aligned() else 0.55
+        code_score = 1.0 if self.signal_code_aligned() else 0.65
+        noise = self.signal_noise * (0.5 + 0.5 * math.sin(pygame.time.get_ticks() * 0.012))
+        return max(0.0, min(1.0, freq_score * band_score * code_score - noise))
+
+    def adjust_frequency(self, delta):
+        self.current_frequency = round(max(88.0, min(108.0, self.current_frequency + delta)), 1)
+        if not self.frequency_aligned():
+            self.stability_frames = max(0, self.stability_frames - 10)
+
+    def cycle_bandwidth(self):
+        current_index = self.bandwidth_options.index(self.current_bandwidth)
+        self.current_bandwidth = self.bandwidth_options[(current_index + 1) % len(self.bandwidth_options)]
+        self.stability_frames = 0
+
+    def cycle_signal_code(self):
+        current_index = self.signal_code_options.index(self.current_signal_code)
+        self.current_signal_code = self.signal_code_options[(current_index + 1) % len(self.signal_code_options)]
+        self.stability_frames = 0
+
+    def interact_circuit(self, node):
+        if self.puzzle_mode == "sequence":
+            expected = self.sequence_target[self.sequence_index] if self.sequence_index < len(self.sequence_target) else None
+            if node.label == expected:
+                node.activated = True
+                self.sequence_index += 1
+                self.set_puzzle_feedback(f"Rele {node.label} sincronizado.")
+            else:
+                for circuit in self.circuit_nodes:
+                    circuit.activated = False
+                self.sequence_index = 0
+                self.set_puzzle_feedback("Secuencia incorrecta: reles reiniciados.")
+                self.add_explosion(node.rect.centerx, node.rect.centery, COLOR_ORANGE)
+                self.trigger_shake(5)
+                return
+        elif self.puzzle_mode == "polarity":
+            labels_to_toggle = self.polarity_links.get(node.label, [node.label])
+            for circuit in self.circuit_nodes:
+                if circuit.label in labels_to_toggle:
+                    circuit.activated = not circuit.activated
+            self.set_puzzle_feedback(f"Polaridad {node.label} alternada.")
+        else:
+            node.activated = True
+            self.set_puzzle_feedback(f"Nodo {node.label} restaurado.")
+
+        self.add_explosion(node.rect.centerx, node.rect.centery, COLOR_GREEN)
+        self.trigger_shake(4)
 
     def trigger_shake(self, intensity):
         self.shake_intensity = intensity
@@ -500,6 +810,10 @@ class Game:
         # Handle State updates
         if self.state == "PLAYING":
             self.elapsed_time = (pygame.time.get_ticks() - self.start_time) // 1000
+            if self.puzzle_feedback_timer > 0:
+                self.puzzle_feedback_timer -= 1
+            else:
+                self.puzzle_feedback = ""
             
             # Update player
             self.player.update(self)
@@ -516,10 +830,37 @@ class Game:
                 if math.hypot(p_center[0] - g_center[0], p_center[1] - g_center[1]) < TILE_SIZE * 1.3:
                     self.near_generator_msg = True
 
+            self.near_circuit_msg = False
+            self.near_circuit = None
+            for node in self.circuit_nodes:
+                if self.circuit_interactable(node) and self.player.get_rect().colliderect(node.rect.inflate(22, 22)):
+                    self.near_circuit_msg = True
+                    self.near_circuit = node
+                    break
+
+            self.player_hidden = any(
+                self.player.get_rect().colliderect(zone.rect.inflate(8, 8))
+                for zone in self.shadow_zones
+            )
+
+            # Check if player is near a radio beacon for narrative hint
+            self.near_radio_hint = False
+            for beacon in self.radio_beacons:
+                if self.player.get_rect().colliderect(beacon.rect.inflate(20, 20)):
+                    self.near_radio_hint = True
+                    break
+
             # Drone collisions
             p_rect = self.player.get_rect()
             for d in self.drones:
                 if p_rect.colliderect(d.get_rect()):
+                    self.last_failure = "Alma fue alcanzada por un drone de patrulla."
+                    self.state = "GAME_OVER"
+                    self.add_explosion(p_rect.centerx, p_rect.centery, COLOR_RED)
+                    self.trigger_shake(16)
+                    break
+                if d.can_see_player(self):
+                    self.last_failure = "Alma fue detectada fuera de las zonas de sombra."
                     self.state = "GAME_OVER"
                     self.add_explosion(p_rect.centerx, p_rect.centery, COLOR_RED)
                     self.trigger_shake(16)
@@ -538,6 +879,7 @@ class Game:
 
             # Boundaries check (fell off map)
             if self.player.py > self.grid_h * TILE_SIZE:
+                self.last_failure = "Alma cayo fuera de la estacion."
                 self.state = "GAME_OVER"
                 self.trigger_shake(10)
 
@@ -556,8 +898,12 @@ class Game:
                 ))
 
         elif self.state == "TUNING":
-            # Check connection matches exactly 104.5 MHz
-            self.freq_connected = abs(self.current_frequency - self.target_frequency) < 0.01
+            if self.tuning_requirements_met():
+                self.stability_frames = min(self.stability_required, self.stability_frames + 1)
+            else:
+                self.stability_frames = max(0, self.stability_frames - 2)
+
+            self.freq_connected = self.stability_frames >= self.stability_required
             # Portal sparks on connection
             if self.freq_connected and random.random() < 0.4:
                 door_center = self.door_rect.center
@@ -616,9 +962,21 @@ class Game:
                     pygame.draw.rect(self.screen, (32, 40, 58), draw_rect)
                     pygame.draw.rect(self.screen, (45, 55, 78), draw_rect, 2)
 
+            # Draw shadow cover zones
+            for zone in self.shadow_zones:
+                zone.draw(self, ox, oy)
+
             # Draw Generator
             if self.generator:
                 self.generator.draw(self, ox, oy)
+
+            # Draw circuit nodes
+            for node in self.circuit_nodes:
+                node.draw(self, ox, oy)
+
+            # Draw Radio Beacons
+            for beacon in self.radio_beacons:
+                beacon.draw(self, ox, oy)
 
             # Draw Exit Door
             if self.door_rect:
@@ -663,12 +1021,17 @@ class Game:
         pygame.draw.line(self.screen, COLOR_GRAY, (0, hud_rect.top), (self.win_w, hud_rect.top), 2)
         
         font = get_font(24)
-        lbl_jumps = font.render(f"JUMPS: {self.steps}", True, COLOR_WHITE)
-        lbl_time = font.render(f"TIME: {self.elapsed_time}s", True, COLOR_WHITE)
-        lbl_level = font.render(f"LEVEL: {self.level_index + 1}/{len(self.level_files)}", True, COLOR_WHITE)
+        font_info = get_font(20)
+        lbl_jumps = font_info.render(f"JUMPS: {self.steps}", True, COLOR_WHITE)
+        lbl_time = font_info.render(f"TIME: {self.elapsed_time}s", True, COLOR_WHITE)
+        lbl_level = font_info.render(f"LEVEL: {self.level_index + 1}/{len(self.level_files)}", True, COLOR_WHITE)
+        lbl_circuits = font_info.render(f"{self.puzzle_name.upper()}: {self.puzzle_progress_text()}", True, COLOR_GREEN if self.circuits_powered() else COLOR_YELLOW)
         
-        status_text = "DOOR LOCKED: ACTIVATE GENERATOR"
+        status_text = "DOOR LOCKED: RESTORE CIRCUITS"
         status_color = COLOR_RED
+        if self.circuits_powered():
+            status_text = "CIRCUITS READY: ACTIVATE GENERATOR"
+            status_color = COLOR_YELLOW
         if self.generator and self.generator.activated:
             status_text = "GENERATOR ACTIVE: PROCEED TO PORTAL"
             status_color = COLOR_CYAN
@@ -676,14 +1039,27 @@ class Game:
         lbl_status = font.render(status_text, True, status_color)
         
         self.screen.blit(lbl_status, (20, hud_rect.top + 15))
-        self.screen.blit(lbl_level, (self.win_w - 500, hud_rect.top + 15))
-        self.screen.blit(lbl_jumps, (self.win_w - 300, hud_rect.top + 15))
-        self.screen.blit(lbl_time, (self.win_w - 140, hud_rect.top + 15))
+        info_x = self.win_w - 20
+        for label in [lbl_time, lbl_jumps, lbl_level, lbl_circuits]:
+            info_x -= label.get_width()
+            self.screen.blit(label, (info_x, hud_rect.top + 18))
+            info_x -= 24
         
         # Interactions tips
         font_sub = get_font(18)
-        if self.near_generator_msg:
+        if self.puzzle_feedback:
+            feedback_color = COLOR_ORANGE if "incorrecta" in self.puzzle_feedback else COLOR_GREEN
+            lbl_tip = font_sub.render(f">> {self.puzzle_feedback.upper()} <<", True, feedback_color)
+        elif self.near_circuit_msg:
+            lbl_tip = font_sub.render(f">> PANEL {self.near_circuit.label}: PRESS [E] | {self.puzzle_name.upper()} {self.puzzle_progress_text()} <<", True, COLOR_YELLOW)
+        elif self.near_generator_msg and not self.circuits_powered():
+            lbl_tip = font_sub.render(f">> {self.puzzle_hint.upper()} <<", True, COLOR_ORANGE)
+        elif self.near_generator_msg:
             lbl_tip = font_sub.render(">> PRESS [E] TO ACTIVATE POWER GENERATOR <<", True, COLOR_YELLOW)
+        elif self.near_radio_hint:
+            lbl_tip = font_sub.render(f">> RADIO HINT: {self.level_hint} <<", True, COLOR_CYAN)
+        elif self.player_hidden:
+            lbl_tip = font_sub.render(">> SHADOW COVER ACTIVE: DRONE VISION IS DISRUPTED <<", True, COLOR_CYAN)
         else:
             lbl_tip = font_sub.render("Controls: A/D/Arrows = Move | W/Space/Up = Jump", True, COLOR_GRAY)
         self.screen.blit(lbl_tip, (20, hud_rect.top + 45))
@@ -706,12 +1082,12 @@ class Game:
         
         font_desc = get_font(20)
         desc_lines = [
-            "Operator: ALMA",
-            "Environment: High Mountain Platform Station",
+            "Operator: ALMA RIOS",
+            "Environment: Cordillera Radio Stations",
             "Mission Instructions:",
-            "  1. Climb platforms and dodge security drones.",
-            "  2. Find and activate the POWER GENERATOR [E].",
-            "  3. Reach the GATE PORTAL [E] and tune the frequency to 104.5 MHz."
+            "  1. Solve each station's circuit puzzle [E].",
+            "  2. Use shadow cover to avoid drone vision.",
+            "  3. Activate the generator, reach the gate and tune the MHz signal."
         ]
         
         self.screen.blit(lbl_title_shadow, (self.win_w//2 - lbl_title.get_width()//2 + 2, 142))
@@ -727,6 +1103,28 @@ class Game:
             
         self.screen.blit(lbl_start, (self.win_w//2 - lbl_start.get_width()//2, self.win_h - 180))
 
+    def draw_centered_wrapped_text(self, text, font, color, center_x, start_y, max_width, line_gap=4):
+        words = text.split()
+        lines = []
+        current = ""
+        for word in words:
+            test_line = word if not current else f"{current} {word}"
+            if font.size(test_line)[0] <= max_width:
+                current = test_line
+            else:
+                if current:
+                    lines.append(current)
+                current = word
+        if current:
+            lines.append(current)
+
+        y = start_y
+        for line in lines:
+            rendered = font.render(line, True, color)
+            self.screen.blit(rendered, (center_x - rendered.get_width() // 2, y))
+            y += rendered.get_height() + line_gap
+        return y
+
     def draw_tuning_screen(self):
         # Semi-transparent dark blue overlay
         overlay = pygame.Surface((self.win_w, self.win_h), pygame.SRCALPHA)
@@ -734,7 +1132,7 @@ class Game:
         self.screen.blit(overlay, (0, 0))
         
         # Center box
-        box_w, box_h = 560, 360
+        box_w, box_h = 660, 500
         box_rect = pygame.Rect(self.win_w//2 - box_w//2, self.win_h//2 - box_h//2 - 20, box_w, box_h)
         pygame.draw.rect(self.screen, COLOR_HUD_BG, box_rect, border_radius=10)
         pygame.draw.rect(self.screen, COLOR_CYAN, box_rect, 2, border_radius=10)
@@ -746,16 +1144,25 @@ class Game:
         # Draw Frequency display
         font_freq = get_font(52, bold=True)
         freq_str = f"{self.current_frequency:.1f} MHz"
-        lbl_freq = font_freq.render(freq_str, True, COLOR_GREEN if self.freq_connected else COLOR_ORANGE)
+        freq_color = COLOR_GREEN if self.frequency_aligned() else COLOR_ORANGE
+        lbl_freq = font_freq.render(freq_str, True, freq_color)
         self.screen.blit(lbl_freq, (box_rect.centerx - lbl_freq.get_width()//2, box_rect.top + 90))
         
-        # Target details
-        font_detail = get_font(22)
-        lbl_target = font_detail.render(f"Target Frequency: {self.target_frequency} MHz", True, COLOR_WHITE)
+        # Clue and diagnostics
+        font_detail = get_font(20)
+        lbl_target = font_detail.render("SIGNAL ANALYSIS: infer the carrier from the station clue", True, COLOR_WHITE)
         self.screen.blit(lbl_target, (box_rect.centerx - lbl_target.get_width()//2, box_rect.top + 160))
+        self.draw_centered_wrapped_text(
+            self.tuning_hint,
+            get_font(17),
+            COLOR_CYAN,
+            box_rect.centerx,
+            box_rect.top + 190,
+            box_w - 90
+        )
         
         # Tuner slider visual
-        slider_y = box_rect.top + 210
+        slider_y = box_rect.top + 245
         pygame.draw.line(self.screen, COLOR_GRAY, (box_rect.left + 50, slider_y), (box_rect.right - 50, slider_y), 4)
         
         # Map current frequency ratio to slider position
@@ -764,38 +1171,79 @@ class Game:
         ratio = max(0.0, min(1.0, ratio))
         slider_x = int(box_rect.left + 50 + ratio * (box_w - 100))
         
-        # Target marker on slider
-        target_ratio = (self.target_frequency - min_f) / (max_f - min_f)
-        target_x = int(box_rect.left + 50 + target_ratio * (box_w - 100))
-        pygame.draw.circle(self.screen, COLOR_CYAN, (target_x, slider_y), 6)
-        
         # Slider handle
         pygame.draw.rect(self.screen, COLOR_WHITE, (slider_x - 6, slider_y - 15, 12, 30), border_radius=3)
+
+        # Bandwidth and code selectors
+        font_label = get_font(18, bold=True)
+        selector_y = box_rect.top + 290
+        band_color = COLOR_GREEN if self.bandwidth_aligned() else COLOR_ORANGE
+        code_color = COLOR_GREEN if self.signal_code_aligned() else COLOR_ORANGE
+        band_text = font_label.render(f"BAND: {self.current_bandwidth}", True, band_color)
+        code_text = font_label.render(f"CODE: {self.current_signal_code}", True, code_color)
+        pygame.draw.rect(self.screen, (18, 28, 46), (box_rect.left + 55, selector_y - 10, 250, 38), border_radius=6)
+        pygame.draw.rect(self.screen, band_color, (box_rect.left + 55, selector_y - 10, 250, 38), 2, border_radius=6)
+        pygame.draw.rect(self.screen, (18, 28, 46), (box_rect.right - 305, selector_y - 10, 250, 38), border_radius=6)
+        pygame.draw.rect(self.screen, code_color, (box_rect.right - 305, selector_y - 10, 250, 38), 2, border_radius=6)
+        self.screen.blit(band_text, (box_rect.left + 70, selector_y))
+        self.screen.blit(code_text, (box_rect.right - 290, selector_y))
+
+        diag_y = box_rect.top + 325
+        diag_font = get_font(16, bold=True)
+        diagnostics = [
+            (self.frequency_diagnostic(), COLOR_GREEN if self.frequency_aligned() else COLOR_ORANGE),
+            (self.filter_diagnostic(), COLOR_GREEN if self.bandwidth_aligned() else COLOR_ORANGE),
+            (self.handshake_diagnostic(), COLOR_GREEN if self.signal_code_aligned() else COLOR_ORANGE)
+        ]
+        diag_x = box_rect.left + 60
+        for text, color in diagnostics:
+            label = diag_font.render(text, True, color)
+            pygame.draw.rect(self.screen, (18, 28, 46), (diag_x - 10, diag_y - 6, label.get_width() + 20, 28), border_radius=5)
+            pygame.draw.rect(self.screen, color, (diag_x - 10, diag_y - 6, label.get_width() + 20, 28), 1, border_radius=5)
+            self.screen.blit(label, (diag_x, diag_y))
+            diag_x += label.get_width() + 34
+
+        # Signal and stability bars
+        bar_x = box_rect.left + 60
+        bar_w = box_w - 120
+        strength_y = box_rect.top + 365
+        stability_y = box_rect.top + 395
+        strength = self.signal_strength()
+        stability = self.tuning_progress()
+        for y, label, value, color in [
+            (strength_y, "SIGNAL", strength, COLOR_CYAN),
+            (stability_y, "STABILITY", stability, COLOR_GREEN if self.freq_connected else COLOR_YELLOW)
+        ]:
+            pygame.draw.rect(self.screen, (25, 32, 48), (bar_x, y, bar_w, 12), border_radius=4)
+            pygame.draw.rect(self.screen, color, (bar_x, y, int(bar_w * value), 12), border_radius=4)
+            txt = get_font(16).render(label, True, COLOR_WHITE)
+            self.screen.blit(txt, (bar_x, y - 18))
         
         # Oscilloscope visual effect in the center box
-        wave_surface = pygame.Surface((box_w - 80, 50), pygame.SRCALPHA)
+        wave_surface = pygame.Surface((box_w - 80, 42), pygame.SRCALPHA)
         wave_pts = []
         freq_diff = abs(self.current_frequency - self.target_frequency)
         wave_speed = pygame.time.get_ticks() * 0.02
-        amplitude = max(2.0, 20.0 - freq_diff * 4.0)
+        amplitude = 4.0 + self.signal_strength() * 18.0
         frequency_mod = 0.05 + (0.2 / max(0.1, freq_diff))
         
         for wx in range(box_w - 80):
-            wy = 25 + amplitude * math.sin(wx * frequency_mod + wave_speed)
+            noise = self.signal_noise * 18.0 * math.sin(wx * 0.43 + wave_speed * 2)
+            wy = 21 + amplitude * math.sin(wx * frequency_mod + wave_speed) + noise
             wave_pts.append((wx, int(wy)))
             
         if len(wave_pts) > 1:
             color = COLOR_GREEN if self.freq_connected else COLOR_CYAN
             pygame.draw.lines(wave_surface, color, False, wave_pts, 2)
-        self.screen.blit(wave_surface, (box_rect.left + 40, box_rect.top + 250))
+        self.screen.blit(wave_surface, (box_rect.left + 40, box_rect.top + 407))
         
         # Action prompts
         font_prompt = get_font(20)
         if self.freq_connected:
             pulse = int(127 + 128 * math.sin(pygame.time.get_ticks() * 0.007))
-            lbl_act = font_prompt.render("CONNECTION LOCKED! PRESS SPACE TO ESCAPE", True, (pulse, 255, pulse))
+            lbl_act = font_prompt.render("LINK LOCKED! PRESS SPACE TO OPEN THE GATE", True, (pulse, 255, pulse))
         else:
-            lbl_act = font_prompt.render("Press 'Q' to TUNE DOWN  |  'E' to TUNE UP", True, COLOR_WHITE)
+            lbl_act = font_prompt.render("Q/E tune MHz  |  TAB band  |  1/2/3 code  |  hold lock to stabilize", True, COLOR_WHITE)
             
         self.screen.blit(lbl_act, (box_rect.centerx - lbl_act.get_width()//2, box_rect.bottom - 40))
 
@@ -830,7 +1278,8 @@ class Game:
         lbl_fail = font_title.render("CONNECTION TERMINATED", True, COLOR_RED)
         
         font_stats = get_font(24)
-        lbl_detail = font_stats.render("Alma fell or was detected by a mountain patrol drone.", True, COLOR_WHITE)
+        detail = self.last_failure or "Alma fell or was detected by a mountain patrol drone."
+        lbl_detail = font_stats.render(detail, True, COLOR_WHITE)
         
         pulse = int(127 + 128 * math.sin(pygame.time.get_ticks() * 0.01))
         lbl_restart = get_font(22).render("PRESS 'R' TO RESTORE PREVIOUS STATE", True, (255, pulse, pulse))
@@ -859,7 +1308,14 @@ class Game:
                             self.player.request_jump()
                         # Interact Generator
                         elif event.key == pygame.K_e:
-                            if self.near_generator_msg and self.generator:
+                            if self.near_circuit_msg and self.near_circuit:
+                                self.interact_circuit(self.near_circuit)
+                            elif self.near_generator_msg and self.generator:
+                                if not self.circuits_powered():
+                                    g_center = self.generator.rect.center
+                                    self.add_explosion(g_center[0], g_center[1], COLOR_ORANGE)
+                                    self.trigger_shake(4)
+                                    continue
                                 self.generator.activated = True
                                 self.near_generator_msg = False
                                 # Sprout particles from generator
@@ -870,9 +1326,15 @@ class Game:
                     elif self.state == "TUNING":
                         # Tune radio with Q/E
                         if event.key == pygame.K_q:
-                            self.current_frequency = max(88.0, self.current_frequency - 0.2)
+                            self.adjust_frequency(-0.1)
                         elif event.key == pygame.K_e:
-                            self.current_frequency = min(108.0, self.current_frequency + 0.2)
+                            self.adjust_frequency(0.1)
+                        elif event.key == pygame.K_TAB:
+                            self.cycle_bandwidth()
+                        elif event.key in [pygame.K_1, pygame.K_2, pygame.K_3]:
+                            code_index = [pygame.K_1, pygame.K_2, pygame.K_3].index(event.key)
+                            self.current_signal_code = self.signal_code_options[code_index]
+                            self.stability_frames = 0
                         elif event.key == pygame.K_SPACE:
                             if self.freq_connected:
                                 door_center = self.door_rect.center
