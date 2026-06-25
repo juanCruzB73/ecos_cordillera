@@ -412,11 +412,24 @@ class ShadowZone:
 class Game:
     def __init__(self):
         self.level_files = [
+            "levels/level0.txt",
             "levels/level1.txt",
             "levels/level2.txt",
             "levels/level3.txt"
         ]
         self.level_configs = {
+            "levels/level0.txt": {
+                "target_frequency": 90.0,
+                "hint": "Tutorial: Sigue las instrucciones para aprender los controles.",
+                "puzzle_mode": "restore_all",
+                "puzzle_name": "Tutorial",
+                "puzzle_hint": "Activa el generador primero.",
+                "required_bandwidth": "WIDE",
+                "required_signal_code": "A",
+                "frequency_window": 0.12,
+                "stability_required": 20,
+                "tuning_hint": "Tutorial: Sintoniza la frecuencia a 90.0 MHz usando Q/E."
+            },
             "levels/level1.txt": {
                 "target_frequency": 104.5,
                 "hint": "La baliza usa base 100.5 y suma energia por nodo restaurado.",
@@ -1000,6 +1013,29 @@ class Game:
             for p in self.particles:
                 p.draw(self.screen, ox, oy)
 
+            # Draw Level 0 Tutorial prompts
+            if self.level_index == 0 and self.state == "PLAYING":
+                tutorial_font = get_font(22, bold=True)
+                tutorial_text = ""
+                if self.generator and not self.generator.activated:
+                    if self.player.px < 350:
+                        tutorial_text = "TUTORIAL: Usa A/D o Flechas para moverte."
+                    elif 350 <= self.player.px < 600:
+                        tutorial_text = "TUTORIAL: Presiona W, ESPACIO o Flecha Arriba para saltar."
+                    else:
+                        tutorial_text = "TUTORIAL: Acercate al interruptor y presiona [E] para activarlo."
+                else:
+                    tutorial_text = "TUTORIAL: ¡Interruptor activo! Ve al portal [E] a la derecha."
+
+                if tutorial_text:
+                    txt_surface = tutorial_font.render(tutorial_text, True, COLOR_CYAN)
+                    bg_rect = pygame.Rect(self.win_w // 2 - txt_surface.get_width() // 2 - 15, 30, txt_surface.get_width() + 30, 40)
+                    box_surface = pygame.Surface((bg_rect.width, bg_rect.height), pygame.SRCALPHA)
+                    pygame.draw.rect(box_surface, (10, 15, 30, 200), (0, 0, bg_rect.width, bg_rect.height), border_radius=6)
+                    pygame.draw.rect(box_surface, COLOR_CYAN, (0, 0, bg_rect.width, bg_rect.height), 2, border_radius=6)
+                    self.screen.blit(box_surface, bg_rect.topleft)
+                    self.screen.blit(txt_surface, (self.win_w // 2 - txt_surface.get_width() // 2, 38))
+
             # Draw HUD
             self.draw_hud()
 
@@ -1027,14 +1063,21 @@ class Game:
         lbl_level = font_info.render(f"LEVEL: {self.level_index + 1}/{len(self.level_files)}", True, COLOR_WHITE)
         lbl_circuits = font_info.render(f"{self.puzzle_name.upper()}: {self.puzzle_progress_text()}", True, COLOR_GREEN if self.circuits_powered() else COLOR_YELLOW)
         
-        status_text = "DOOR LOCKED: RESTORE CIRCUITS"
-        status_color = COLOR_RED
-        if self.circuits_powered():
-            status_text = "CIRCUITS READY: ACTIVATE GENERATOR"
+        if self.level_index == 0:
+            status_text = "TUTORIAL: ACTIVA EL INTERRUPTOR (G)"
             status_color = COLOR_YELLOW
-        if self.generator and self.generator.activated:
-            status_text = "GENERATOR ACTIVE: PROCEED TO PORTAL"
-            status_color = COLOR_CYAN
+            if self.generator and self.generator.activated:
+                status_text = "TUTORIAL: INTERRUPTOR ACTIVO - INGRESA AL PORTAL"
+                status_color = COLOR_CYAN
+        else:
+            status_text = "DOOR LOCKED: RESTORE CIRCUITS"
+            status_color = COLOR_RED
+            if self.circuits_powered():
+                status_text = "CIRCUITS READY: ACTIVATE GENERATOR"
+                status_color = COLOR_YELLOW
+            if self.generator and self.generator.activated:
+                status_text = "GENERATOR ACTIVE: PROCEED TO PORTAL"
+                status_color = COLOR_CYAN
             
         lbl_status = font.render(status_text, True, status_color)
         
@@ -1125,18 +1168,81 @@ class Game:
             y += rendered.get_height() + line_gap
         return y
 
+    def draw_wrapped_text(self, text, font, color, x, start_y, max_width, line_gap=4):
+        words = text.split()
+        lines = []
+        current = ""
+        for word in words:
+            test_line = word if not current else f"{current} {word}"
+            if font.size(test_line)[0] <= max_width:
+                current = test_line
+            else:
+                if current:
+                    lines.append(current)
+                current = word
+        if current:
+            lines.append(current)
+
+        y = start_y
+        for line in lines:
+            rendered = font.render(line, True, color)
+            self.screen.blit(rendered, (x, y))
+            y += rendered.get_height() + line_gap
+        return y
+
     def draw_tuning_screen(self):
         # Semi-transparent dark blue overlay
         overlay = pygame.Surface((self.win_w, self.win_h), pygame.SRCALPHA)
         overlay.fill((5, 10, 25, 230))
         self.screen.blit(overlay, (0, 0))
         
+        # Center two boxes: Main Tuning Panel and Spanish Guide Panel
+        total_w = 660 + 20 + 270 # 950
+        start_x = self.win_w // 2 - total_w // 2
+        
         # Center box
         box_w, box_h = 660, 500
-        box_rect = pygame.Rect(self.win_w//2 - box_w//2, self.win_h//2 - box_h//2 - 20, box_w, box_h)
+        box_rect = pygame.Rect(start_x, self.win_h//2 - box_h//2 - 20, box_w, box_h)
         pygame.draw.rect(self.screen, COLOR_HUD_BG, box_rect, border_radius=10)
         pygame.draw.rect(self.screen, COLOR_CYAN, box_rect, 2, border_radius=10)
         
+        # Guide box (on the right)
+        guide_w, guide_h = 270, box_h
+        guide_rect = pygame.Rect(box_rect.right + 20, box_rect.top, guide_w, guide_h)
+        pygame.draw.rect(self.screen, COLOR_HUD_BG, guide_rect, border_radius=10)
+        pygame.draw.rect(self.screen, COLOR_CYAN, guide_rect, 2, border_radius=10)
+        
+        # Draw Guide Title
+        font_guide_title = get_font(20, bold=True)
+        lbl_guide_title = font_guide_title.render("GUÍA DE SINTONIZACIÓN", True, COLOR_CYAN)
+        self.screen.blit(lbl_guide_title, (guide_rect.centerx - lbl_guide_title.get_width()//2, guide_rect.top + 20))
+        
+        # Guide items
+        guide_items = [
+            ("Q", "Bajar frecuencia en pasos de 0.1 MHz."),
+            ("E", "Subir frecuencia en pasos de 0.1 MHz."),
+            ("TAB", "Cambiar banda entre WIDE, NARROW y PULSE."),
+            ("1, 2, 3", "Seleccionar código A, B o C."),
+            ("Espacio", "Abrir la puerta cuando el enlace está bloqueado y estabilizado.")
+        ]
+        
+        font_key = get_font(15, bold=True)
+        font_desc = get_font(14)
+        
+        gy = guide_rect.top + 60
+        for key, desc in guide_items:
+            # Draw key badge
+            key_lbl = font_key.render(key, True, COLOR_BG)
+            key_w = max(35, key_lbl.get_width() + 12)
+            key_rect = pygame.Rect(guide_rect.left + 15, gy, key_w, 20)
+            pygame.draw.rect(self.screen, COLOR_CYAN, key_rect, border_radius=4)
+            self.screen.blit(key_lbl, (key_rect.centerx - key_lbl.get_width()//2, key_rect.centery - key_lbl.get_height()//2))
+            
+            # Draw description below/next to the key
+            self.draw_wrapped_text(desc, font_desc, COLOR_WHITE, guide_rect.left + 15, gy + 24, guide_w - 30)
+            gy += 82
+        
+        # Continue with main panel content
         font_title = get_font(32, bold=True)
         lbl_head = font_title.render("ANTENNA LINK TUNER", True, COLOR_CYAN)
         self.screen.blit(lbl_head, (box_rect.centerx - lbl_head.get_width()//2, box_rect.top + 25))
@@ -1241,9 +1347,9 @@ class Game:
         font_prompt = get_font(20)
         if self.freq_connected:
             pulse = int(127 + 128 * math.sin(pygame.time.get_ticks() * 0.007))
-            lbl_act = font_prompt.render("LINK LOCKED! PRESS SPACE TO OPEN THE GATE", True, (pulse, 255, pulse))
+            lbl_act = font_prompt.render("ENLACE BLOQUEADO! PRESIONA ESPACIO PARA ABRIR LA PUERTA", True, (pulse, 255, pulse))
         else:
-            lbl_act = font_prompt.render("Q/E tune MHz  |  TAB band  |  1/2/3 code  |  hold lock to stabilize", True, COLOR_WHITE)
+            lbl_act = font_prompt.render("Sintoniza con Q/E  |  Banda con TAB  |  Código con 1/2/3", True, COLOR_WHITE)
             
         self.screen.blit(lbl_act, (box_rect.centerx - lbl_act.get_width()//2, box_rect.bottom - 40))
 
