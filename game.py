@@ -251,6 +251,7 @@ class Game:
         self.particles.clear()
         self.shake_intensity = 0
         self.steps = 0
+        self.countdown = 100
         self.current_frequency = max(88.0, min(108.0, self.target_frequency - 4.0))
         self.freq_connected = False
         self.near_generator_msg = False
@@ -426,6 +427,14 @@ class Game:
 
         if self.state == "PLAYING":
             self.elapsed_time = (pygame.time.get_ticks() - self.start_time) // 1000
+            self.countdown = max(0, 100 - self.elapsed_time)
+            if self.countdown == 0:
+                self.last_failure = "Alma se quedó sin tiempo."
+                self.state = "GAME_OVER"
+                p_rect = self.player.get_rect()
+                self.add_explosion(p_rect.centerx, p_rect.centery, COLOR_RED)
+                self.trigger_shake(16)
+                return
             if self.puzzle_feedback_timer > 0:
                 self.puzzle_feedback_timer -= 1
             else:
@@ -633,7 +642,9 @@ class Game:
         font = get_font(24)
         font_info = get_font(20)
         lbl_jumps = font_info.render(f"JUMPS: {self.steps}", True, COLOR_WHITE)
-        lbl_time = font_info.render(f"TIME: {self.elapsed_time}s", True, COLOR_WHITE)
+        countdown_val = getattr(self, "countdown", 100)
+        time_color = COLOR_RED if countdown_val <= 20 else (COLOR_YELLOW if countdown_val <= 40 else COLOR_WHITE)
+        lbl_time = font_info.render(f"TIME: {countdown_val}s", True, time_color)
         lbl_level = font_info.render(f"LEVEL: {self.level_index + 1}/{len(self.level_files)}", True, COLOR_WHITE)
         lbl_circuits = font_info.render(f"{self.puzzle_name.upper()}: {self.puzzle_progress_text()}", True, COLOR_GREEN if self.circuits_powered() else COLOR_YELLOW)
 
